@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"bufio"
 )
 
 // Handler processes log records and writes them to appropriate destination.
@@ -34,6 +35,35 @@ func StreamHandler(out io.Writer, formatter Formatter) Handler {
 		return err
 	})
 }
+
+// FileHandler writes log records to file with provided name.
+func BufferedStreamHandler(out io.Writer, bufferSize int, formatter Formatter) Handler {
+	return &bufferedHandler{
+		bufSize: bufferSize,
+		formatter: formatter,
+		writer: bufio.NewWriterSize(out, bufferSize),
+	}
+}
+
+// bufferedHandler writes log messages to buffered IO with provided name.
+type bufferedHandler struct {
+	bufSize  int
+	formatter Formatter
+	writer         *bufio.Writer
+	orignal		   io.Writer
+}
+
+// Handle writes record to file.
+func (bh *bufferedHandler) Handle(record Record) error {
+	_, err := bh.writer.Write(bh.formatter.Format(record))
+	return err
+}
+
+// Close closes file were records are being written.
+func (bh *bufferedHandler) Close() {
+	bh.writer.Flush()
+}
+
 
 // Predicate is function that returns true if record should be logged, false otherwise.
 type Predicate func(Record) bool
