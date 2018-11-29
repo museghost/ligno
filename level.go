@@ -33,12 +33,12 @@ var (
 )
 
 func init() {
-	AddLevel("NOTSET", NOTSET)
-	AddLevel("DEBUG", DEBUG)
+	AddLevel("NOPE", NOTSET)
+	AddLevel("DBUG", DEBUG)
 	AddLevel("INFO", INFO)
-	AddLevel("WARNING", WARNING)
-	AddLevel("ERROR", ERROR)
-	AddLevel("CRITICAL", CRITICAL)
+	AddLevel("WARN", WARNING)
+	AddLevel("EROR", ERROR)
+	AddLevel("CRIT", CRITICAL)
 }
 
 // getLevelName returns name of provided level.

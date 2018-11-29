@@ -19,11 +19,12 @@ func (ctx Ctx) merge(other Ctx) (merged Ctx) {
 
 // Record holds information about one log message.
 type Record struct {
-	Time    time.Time `json:"time"`
-	Level   Level     `json:"level"`
-	Message string    `json:"message"`
-	Context Ctx       `json:"context"`
-	Logger  *Logger   `json:"-"`
-	File    string    `json:"file"`
-	Line    int       `json:"line"`
+	Time    		time.Time 		`json:"ts"`
+	Level   		Level     		`json:"lvl"`
+	Message 		string    		`json:"msg"`
+	ContextList 	[]interface{} 	`json:"-"`
+	Pairs   		[]interface{}	`json:"-"`
+	Logger  		*Logger   		`json:"-"`
+	File    		string    		`json:"file"`
+	Line    		int       		`json:"line"`
 }

@@ -138,6 +138,7 @@ type Logger struct {
 	// key-value pairs that will be added to every record logged with this
 	// logger. They have lowest priority.
 	context Ctx
+	contextList  []interface{}
 	// handler is backed for processing records.
 	handler *replaceableHandler
 	// handlerChanged is notification mechanism to notify working goroutines
@@ -215,9 +216,11 @@ func createLogger(name string, options LoggerOptions) *Logger {
 	} else {
 		buffSize = 1024
 	}
+
 	l := &Logger{
 		name:               name,
 		context:            options.Context,
+		contextList:		make([]interface{}, 0),
 		records:            make(chan Record, buffSize),
 		rawRecords:         make(chan Record, buffSize),
 		notifyFinished:     make(chan chan struct{}),
@@ -225,6 +228,13 @@ func createLogger(name string, options LoggerOptions) *Logger {
 		level:              options.Level,
 		includeFileAndLine: options.IncludeFileAndLine,
 	}
+
+	// performance enhanced: no use map[string]interface{}
+	// context's type should be []interface{}
+	for k, v := range options.Context {
+		l.contextList = append(l.contextList, k, fmt.Sprintf("%+v", v))
+	}
+
 	// no need to lock access to state here since we just created logger
 	// and nobody can use it anywhere else at the moment.
 	l.state.val = loggerRunning
@@ -395,8 +405,6 @@ func (l *Logger) processRecords() {
 				return
 			}
 
-			record.Context = l.buildContext().merge(record.Context)
-
 			l.records <- record
 			if !l.relationship.preventPropagation && l.relationship.parent != nil {
 				l.relationship.parent.log(-1, record)
@@ -546,7 +554,6 @@ func (l *Logger) Log(calldepth int, level Level, message string, pairs ...interf
 	if !l.IsEnabledFor(level) {
 		return
 	}
-	var ctx = make(Ctx)
 
 	// make sure that number of items in data is even
 	pairsNo := len(pairs)
@@ -563,16 +570,13 @@ func (l *Logger) Log(calldepth int, level Level, message string, pairs ...interf
 			pairs = append(pairs, []interface{}{nil, "error", "missing key"}...)
 		}
 	}
-	for i := 0; i < len(pairs); i += 2 {
-		keyStr := fmt.Sprintf("%v", pairs[i])
-		ctx[keyStr] = pairs[i+1]
-	}
 
 	r := Record{
 		Time:    time.Now().UTC(),
 		Level:   level,
 		Message: message,
-		Context: ctx,
+		Pairs: pairs,
+		ContextList: l.contextList,
 		Logger:  l,
 	}
 	l.log(calldepth+1, r)
@@ -589,9 +593,15 @@ func (l *Logger) LogCtx(calldepth int, level Level, message string, data Ctx) {
 		Time:    time.Now().UTC(),
 		Level:   level,
 		Message: message,
-		Context: data,
 		Logger:  l,
 	}
+
+	// performance enhanced: no use map[string]interface{}
+	// context's type should be []interface{}
+	for k, v := range data {
+		r.ContextList = append(r.ContextList, k, fmt.Sprintf("%+v", v))
+	}
+
 	l.log(calldepth+1, r)
 }
 

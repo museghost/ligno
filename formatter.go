@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode"
+	"time"
 
 	isatty "github.com/mattn/go-isatty"
+)
+
+const (
+	floatFormat    = 'f'
+	errorKey = "PARSE_ERROR"
 )
 
 // Formatter is interface for converting log record to string representation.
@@ -27,7 +32,7 @@ func (ff FormatterFunc) Format(record Record) []byte {
 }
 
 // DefaultTimeFormat is default time format.
-const DefaultTimeFormat = "2006-01-02 15:05:06.0000"
+const DefaultTimeFormat = time.RFC3339Nano
 
 // SimpleFormat returns formatter that formats record with bare minimum of information.
 // Intention of this formatter is to simulate standard library formatter.
@@ -78,18 +83,18 @@ func ThemedTerminalFormat(theme Theme) Formatter {
 
 		buff.WriteString(record.Message)
 
-		ctx := record.Context
-		keys := make([]string, 0, len(ctx))
-		for k := range ctx {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
+		record.Pairs = append(record.ContextList, record.Pairs...)
+		record.Pairs = append([]interface{}{
+			"ts", record.Time,
+			"lvl", record.Level,
+			"msg", record.Message},
+			record.Pairs...)
 
-		if len(keys) > 0 {
+		if len(record.Pairs) > 0 {
 			buff.WriteString(" [")
 		}
-		for i := 0; i < len(keys); i++ {
-			k := keys[i]
+		for i := 0; i < len(record.Pairs); i += 2 {
+			k := record.Pairs[i].(string)
 			keyQuote := strings.IndexFunc(k, needsQuote) >= 0 || k == ""
 			if keyQuote {
 				buff.WriteRune('"')
@@ -100,13 +105,13 @@ func ThemedTerminalFormat(theme Theme) Formatter {
 			}
 			buff.WriteRune('=')
 			buff.WriteRune('"')
-			buff.WriteString(fmt.Sprintf("%+v", ctx[k]))
+			buff.WriteString(fmt.Sprintf("%+v", record.Pairs[i+1]))
 			buff.WriteRune('"')
-			if i < len(keys)-1 {
+			if i < len(record.Pairs)-2 {
 				buff.WriteRune(' ')
 			}
 		}
-		if len(keys) > 0 {
+		if len(record.Pairs) > 0 {
 			buff.WriteRune(']')
 		}
 		buff.WriteRune('\n')
@@ -126,17 +131,39 @@ func JSONFormat(pretty bool) Formatter {
 	return FormatterFunc(func(record Record) []byte {
 		// since errors are not JSON serializable, make sure that all errors
 		// are converted to strings
-		for k, v := range record.Context {
-			record.Context[k] = fmt.Sprintf("%+v", v)
+		for idx := range record.ContextList {
+			record.ContextList[idx] = fmt.Sprintf("%+v", record.ContextList[idx])
+		}
+
+		// set context (static value)
+		record.Pairs = append(record.ContextList, record.Pairs...)
+
+		// set default info
+		record.Pairs = append([]interface{}{
+			"ts", record.Time,
+			"lvl", record.Level,
+			"msg", record.Message},
+			record.Pairs...)
+
+		if record.Line > 0 {
+			record.Pairs = append(record.Pairs, []interface{}{
+				"file", record.File,
+				"line", record.Line,
+			}...)
+		}
+
+		tmpMap := make(map[string]interface{})
+		for i := 0; i < len(record.Pairs); i += 2 {
+			tmpMap[record.Pairs[i].(string)] = record.Pairs[i+1]
 		}
 
 		// serialize
 		var marshaled []byte
 		var err error
 		if pretty {
-			marshaled, err = json.MarshalIndent(record, "", "    ")
+			marshaled, err = json.MarshalIndent(tmpMap, "", "    ")
 		} else {
-			marshaled, err = json.Marshal(record)
+			marshaled, err = json.Marshal(tmpMap)
 		}
 		if err != nil {
 			marshaled, _ = json.Marshal(map[string]string{
@@ -146,4 +173,119 @@ func JSONFormat(pretty bool) Formatter {
 		marshaled = append(marshaled, '\n')
 		return marshaled
 	})
+}
+
+func LogFmtFormat() Formatter {
+	return FormatterFunc(func(record Record) []byte {
+		record.Pairs = append(record.ContextList, record.Pairs...)
+
+		// set default info
+		record.Pairs = append([]interface{}{
+			"ts", record.Time,
+			"lvl", record.Level,
+			"msg", record.Message},
+			record.Pairs...)
+
+		if record.Line > 0 {
+			record.Pairs = append(record.Pairs, []interface{}{
+				"file", record.File,
+				"line", record.Line,
+			}...)
+		}
+
+		// encoding them according to logfmt
+		buf := &bytes.Buffer{}
+		for i := 0; i < len(record.Pairs); i += 2 {
+			if i != 0 {
+				buf.WriteByte(' ')
+			}
+
+			k, ok := record.Pairs[i].(string)
+			v := formatLogfmtValue(record.Pairs[i+1])
+			if !ok {
+				k, v = errorKey, formatLogfmtValue(k)
+			}
+
+			buf.WriteString(k)
+			buf.WriteByte('=')
+			buf.WriteString(v)
+		}
+
+		buf.WriteByte('\n')
+		return buf.Bytes()
+	})
+}
+
+// formatValue formats a value for serialization
+func formatLogfmtValue(value interface{}) string {
+	if value == nil {
+		return "nil"
+	}
+
+	if t, ok := value.(time.Time); ok {
+		// Performance optimization: No need for escaping since the provided
+		// timeFormat doesn't have any escape characters, and escaping is
+		// expensive.
+		return t.Format(DefaultTimeFormat)
+	}
+	//value = formatShared(value)
+	switch v := value.(type) {
+	case bool:
+		return strconv.FormatBool(v)
+	case float32:
+		return strconv.FormatFloat(float64(v), floatFormat, 3, 64)
+	case float64:
+		return strconv.FormatFloat(v, floatFormat, 3, 64)
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("%d", value)
+	case string:
+		return escapeString(v)
+	default:
+		return escapeString(fmt.Sprintf("%+v", value))
+	}
+}
+
+func escapeString(s string) string {
+	needsQuotes := false
+	needsEscape := false
+	for _, r := range s {
+		if r <= ' ' || r == '=' || r == '"' {
+			needsQuotes = true
+		}
+		if r == '\\' || r == '"' || r == '\n' || r == '\r' || r == '\t' {
+			needsEscape = true
+		}
+	}
+	if needsEscape == false && needsQuotes == false {
+		return s
+	}
+
+	e := buffPool.Get()
+
+	e.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\', '"':
+			e.WriteByte('\\')
+			e.WriteByte(byte(r))
+		case '\n':
+			e.WriteString("\\n")
+		case '\r':
+			e.WriteString("\\r")
+		case '\t':
+			e.WriteString("\\t")
+		default:
+			e.WriteRune(r)
+		}
+	}
+	e.WriteByte('"')
+	var ret string
+	if needsQuotes {
+		ret = e.String()
+	} else {
+		ret = string(e.Bytes()[1 : e.Len()-1])
+	}
+	e.Reset()
+	buffPool.Put(e)
+	return ret
 }
